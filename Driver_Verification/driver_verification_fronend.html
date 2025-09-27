@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Driver Verification</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #111827; /* Dark Gray */
+        }
+        .video-container::before {
+            content: '';
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 280px;
+            height: 380px;
+            border: 2px dashed #4B5563; /* Gray */
+            border-radius: 1rem;
+            transition: border-color 0.3s ease-in-out, border-style 0.3s ease-in-out;
+        }
+        .video-container.verified::before {
+            border-color: #22c55e; /* Green */
+            border-style: solid;
+        }
+        .video-container.unverified::before {
+            border-color: #ef4444; /* Red */
+            border-style: solid;
+        }
+        #popup {
+            transition: opacity 0.3s ease-in-out, transform 0.3s ease-in-out;
+        }
+    </style>
+</head>
+<body class="flex items-center justify-center min-h-screen text-white p-4">
+
+    <div class="w-full max-w-2xl mx-auto text-center">
+        <!-- Header -->
+        <header class="mb-6">
+            <h1 class="text-3xl font-bold tracking-tight text-gray-100">Driver Verification</h1>
+            <p id="instruction" class="text-lg text-gray-400 mt-2">Position your face within the frame</p>
+        </header>
+
+        <!-- Video Feed -->
+        <div id="video-container" class="video-container relative w-full aspect-[4/3] bg-black rounded-2xl shadow-2xl overflow-hidden mx-auto">
+            <video id="video" class="w-full h-full object-cover" autoplay playsinline muted></video>
+        </div>
+        <!-- Hidden canvas for frame capture -->
+        <canvas id="canvas" width="640" height="480" class="hidden"></canvas>
+    </div>
+
+    <!-- Verification Success Popup -->
+    <div id="popup" class="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center opacity-0 pointer-events-none transform scale-95">
+        <div class="bg-gray-800 rounded-2xl shadow-lg p-8 text-center border border-gray-700">
+            <svg class="mx-auto h-16 w-16 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            <h2 class="mt-4 text-2xl font-bold text-white">Driver Verified</h2>
+            <p class="mt-1 text-gray-300">You can now proceed.</p>
+        </div>
+    </div>
+
+    <script>
+        const videoElement = document.getElementById('video');
+        const instructionElement = document.getElementById('instruction');
+        const popupElement = document.getElementById('popup');
+        const videoContainer = document.getElementById('video-container');
+        const canvasElement = document.getElementById('canvas');
+        const canvasContext = canvasElement.getContext('2d');
+
+        let verificationInterval;
+        let isVerified = false;
+
+        // --- 1. Access Webcam ---
+        async function setupWebcam() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { width: 640, height: 480 },
+                    audio: false
+                });
+                videoElement.srcObject = stream;
+                videoElement.onloadedmetadata = () => {
+                    // Start sending frames to the backend for verification
+                    verificationInterval = setInterval(sendFrameForVerification, 1000); // Send a frame every second
+                };
+            } catch (err) {
+                console.error("Error accessing webcam:", err);
+                instructionElement.textContent = "Webcam access denied. Please enable it in your browser settings.";
+                instructionElement.classList.add('text-red-500');
+            }
+        }
+
+        // --- 2. Send Frame to Backend for Verification ---
+        async function sendFrameForVerification() {
+            if (isVerified) {
+                clearInterval(verificationInterval);
+                return;
+            }
+
+            // Draw the current video frame to the hidden canvas
+            canvasContext.drawImage(videoElement, 0, 0, canvasElement.width, canvasElement.height);
+            // Get the frame as a Base64 encoded JPEG image
+            const imageDataUrl = canvasElement.toDataURL('image/jpeg');
+
+            try {
+                // Send the image data to the Flask server
+                // Using 127.0.0.1 is more stable for local development than a changing network IP.
+                const response = await fetch('http://127.0.0.1:5000/verify', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ image: imageDataUrl }),
+                });
+
+                if (!response.ok) {
+                    console.error("Error from server:", response.statusText);
+                    return;
+                }
+
+                const result = await response.json();
+                updateUI(result);
+
+            } catch (error) {
+                console.error("Failed to send frame to server:", error);
+                // Stop trying to connect if it fails, to avoid flooding the console with errors.
+                clearInterval(verificationInterval); 
+                instructionElement.textContent = "Connection Error: Is the Python server running?";
+                instructionElement.classList.add('text-red-500'); // Make the error more visible
+            }
+        }
+
+        // --- 3. Update UI Based on Server Response ---
+        function updateUI(result) {
+            videoContainer.classList.remove('verified', 'unverified');
+
+            if (result.status === 'VERIFIED') {
+                isVerified = true;
+                instructionElement.textContent = `Welcome, ${result.name}!`;
+                videoContainer.classList.add('verified');
+                showVerificationSuccess();
+            } else if (result.status === 'UNVERIFIED') {
+                instructionElement.textContent = "Unauthorized Driver Detected";
+                videoContainer.classList.add('unverified');
+            } else { // SCANNING or no face
+                instructionElement.textContent = "Please position your face in the frame";
+            }
+        }
+
+        // --- 4. Show Verification Success UI ---
+        function showVerificationSuccess() {
+            // Stop sending frames
+            clearInterval(verificationInterval);
+            
+            // Show the success popup
+            popupElement.classList.remove('opacity-0', 'pointer-events-none', 'scale-95');
+            popupElement.classList.add('opacity-100', 'scale-100');
+
+            // --- NEXT STEP ---
+            // After verification, you can start your drowsiness detection logic.
+            console.log("Starting drowsiness detection logic now...");
+        }
+
+        // --- Start the process when the page loads ---
+        window.addEventListener('load', setupWebcam);
+    </script>
+
+</body>
+</html>
+
+
